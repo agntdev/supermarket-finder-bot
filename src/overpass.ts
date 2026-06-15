@@ -15,6 +15,8 @@ import {
   SUPERMARKET_TAGS,
 } from "./types";
 import type { InMemoryCache } from "./cache";
+import { overpassLimiter } from "./rate_limiter";
+import { withRetry } from "./retry";
 
 const EARTH_RADIUS_M = 6_371_000;
 
@@ -152,37 +154,41 @@ export async function queryOverpass(
   req: SearchRequest,
   endpoint?: string,
 ): Promise<Place[]> {
-  const query = buildOverpassQuery(req);
-  const url = endpoint || OVERPASS_ENDPOINT;
+  return withRetry(async () => {
+    await overpassLimiter.acquire();
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
+    const query = buildOverpassQuery(req);
+    const url = endpoint || OVERPASS_ENDPOINT;
 
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
-        "User-Agent":
-          "SupermarketFinderBot/1.0 (Telegram bot; contact@example.com)",
-      },
-      body: new URLSearchParams({ data: query }).toString(),
-      signal: controller.signal,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new OverpassError(
-        `Overpass API returned ${res.status}: ${body.slice(0, 200)}`,
-        res.status,
-      );
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+          "User-Agent":
+            "SupermarketFinderBot/1.0 (Telegram bot; contact@example.com)",
+        },
+        body: new URLSearchParams({ data: query }).toString(),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new OverpassError(
+          `Overpass API returned ${res.status}: ${body.slice(0, 200)}`,
+          res.status,
+        );
+      }
+
+      const data = (await res.json()) as OverpassResponse;
+      return parseOverpassResponse(data, req.origin);
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const data = (await res.json()) as OverpassResponse;
-    return parseOverpassResponse(data, req.origin);
-  } finally {
-    clearTimeout(timeout);
-  }
+  });
 }
 
 export function defaultSearchRequest(
