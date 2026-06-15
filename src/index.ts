@@ -125,9 +125,12 @@ bot.command("nearby", async (ctx) => {
   const prefs = ctx.session.prefs;
   if (!prefs.lastLocation) {
     await ctx.reply(
-      "No prior location found. Please share your location first.",
+      "No prior location found. Please share your location first.\n\n" +
+        "If location sharing is not working, check that Telegram has location permissions enabled in your device settings.",
       {
-        reply_markup: locationRequestKeyboard(),
+        reply_markup: new InlineKeyboard()
+          .text("Location Help", "error:location_denied")
+          .text("Main Menu", "back:main"),
       },
     );
     return;
@@ -142,6 +145,11 @@ bot.command("nearby", async (ctx) => {
     console.error("Nearby search error:", err);
     await ctx.reply(
       "Temporarily unable to fetch data. Please try again in a few minutes.",
+      {
+        reply_markup: new InlineKeyboard()
+          .text("Retry", "error:retry")
+          .text("Settings", "back:settings"),
+      },
     );
   }
 });
@@ -164,6 +172,11 @@ bot.on("message:location", async (ctx) => {
     console.error("Location search error:", err);
     await ctx.reply(
       "Temporarily unable to fetch data. Please try again in a few minutes.",
+      {
+        reply_markup: new InlineKeyboard()
+          .text("Retry", "error:retry")
+          .text("Settings", "back:settings"),
+      },
     );
   }
 });
@@ -213,7 +226,9 @@ bot.on("message:text", async (ctx) => {
     await ctx.reply(
       "Temporarily unable to look up addresses. Please try again or share your GPS location.",
       {
-        reply_markup: locationRequestKeyboard(),
+        reply_markup: new InlineKeyboard()
+          .text("Share Location", "error:location_denied")
+          .text("Retry", "error:retry"),
       },
     );
   }
@@ -412,6 +427,11 @@ bot.callbackQuery(/^geocode:(\d+)$/, async (ctx) => {
     console.error("Geocode search error:", err);
     await ctx.reply(
       "Temporarily unable to fetch data. Please try again in a few minutes.",
+      {
+        reply_markup: new InlineKeyboard()
+          .text("Retry", "error:retry")
+          .text("Settings", "back:settings"),
+      },
     );
   }
 
@@ -433,7 +453,62 @@ bot.callbackQuery("geocode:cancel", async (ctx) => {
 });
 
 bot.catch((err) => {
+  const code = (err.error as Record<string, unknown> | undefined)?.error_code;
+  if (code === 403) {
+    console.error(
+      "Bot blocked or kicked from chat:",
+      (err.error as Record<string, unknown> | undefined)?.description,
+    );
+    return;
+  }
   console.error("Bot error:", err.error);
+});
+
+bot.callbackQuery("error:location_denied", async (ctx) => {
+  await ctx.editMessageText(
+    "Location access is needed to search for nearby supermarkets.\n\n" +
+      "To enable location sharing:\n" +
+      "\u2022 Tap the paperclip \uD83D\uDCCE icon and select \"Location\"\n" +
+      "\u2022 Or type an address directly (e.g. \"123 Main St, London\")\n" +
+      "\u2022 Make sure Telegram has location permissions in your device settings",
+    {
+      reply_markup: new InlineKeyboard()
+        .text("Retry Search", "error:retry")
+        .row()
+        .text("Settings", "back:settings")
+        .text("Main Menu", "back:main"),
+    },
+  );
+  await ctx.answerCallbackQuery();
+});
+
+bot.callbackQuery("error:retry", async (ctx) => {
+  const prefs = ctx.session.prefs;
+  if (!prefs.lastLocation) {
+    await ctx.editMessageText(
+      "No location on file. Please share your location or type an address to search.",
+      {
+        reply_markup: new InlineKeyboard()
+          .text("Location Help", "error:location_denied")
+          .text("Main Menu", "back:main"),
+      },
+    );
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  await ctx.editMessageText("Retrying location search...");
+  await ctx.answerCallbackQuery();
+
+  try {
+    const label = await resolveLocationLabel(prefs.lastLocation);
+    await runSearchAndReply(ctx, prefs.lastLocation, prefs, label);
+  } catch (err) {
+    console.error("Retry search error:", err);
+    await ctx.reply(
+      "Still unable to fetch data. The service may be temporarily down. Please try again later.",
+    );
+  }
 });
 
 bot.callbackQuery("results:radius_up", async (ctx) => {
@@ -456,7 +531,14 @@ bot.callbackQuery("results:radius_up", async (ctx) => {
     await runSearchAndReply(ctx, prefs.lastLocation, prefs, label);
   } catch (err) {
     console.error("Radius up search error:", err);
-    await ctx.reply("Temporarily unable to fetch data. Please try again in a few minutes.");
+    await ctx.reply(
+      "Temporarily unable to fetch data. Please try again in a few minutes.",
+      {
+        reply_markup: new InlineKeyboard()
+          .text("Retry", "error:retry")
+          .text("Settings", "back:settings"),
+      },
+    );
   }
 });
 
@@ -480,7 +562,14 @@ bot.callbackQuery("results:radius_down", async (ctx) => {
     await runSearchAndReply(ctx, prefs.lastLocation, prefs, label);
   } catch (err) {
     console.error("Radius down search error:", err);
-    await ctx.reply("Temporarily unable to fetch data. Please try again in a few minutes.");
+    await ctx.reply(
+      "Temporarily unable to fetch data. Please try again in a few minutes.",
+      {
+        reply_markup: new InlineKeyboard()
+          .text("Retry", "error:retry")
+          .text("Settings", "back:settings"),
+      },
+    );
   }
 });
 

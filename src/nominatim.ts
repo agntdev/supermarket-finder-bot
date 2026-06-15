@@ -5,6 +5,8 @@ import {
   NOMINATIM_USER_AGENT,
 } from "./types";
 import type { InMemoryCache } from "./cache";
+import { nominatimLimiter } from "./rate_limiter";
+import { withRetry } from "./retry";
 
 export class NominatimError extends Error {
   code: number;
@@ -20,76 +22,84 @@ export async function geocodeAddress(
   limit = 5,
   endpoint?: string,
 ): Promise<GeocodeResult[]> {
-  const url = new URL("/search", endpoint || NOMINATIM_ENDPOINT);
-  url.searchParams.set("q", query);
-  url.searchParams.set("format", "json");
-  url.searchParams.set("limit", String(limit));
-  url.searchParams.set("addressdetails", "1");
+  return withRetry(async () => {
+    await nominatimLimiter.acquire();
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), NOMINATIM_TIMEOUT_MS);
+    const url = new URL("/search", endpoint || NOMINATIM_ENDPOINT);
+    url.searchParams.set("q", query);
+    url.searchParams.set("format", "json");
+    url.searchParams.set("limit", String(limit));
+    url.searchParams.set("addressdetails", "1");
 
-  try {
-    const res = await fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        "User-Agent": NOMINATIM_USER_AGENT,
-        Accept: "application/json",
-      },
-      signal: controller.signal,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), NOMINATIM_TIMEOUT_MS);
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new NominatimError(
-        `Nominatim API returned ${res.status}: ${body.slice(0, 200)}`,
-        res.status,
-      );
+    try {
+      const res = await fetch(url.toString(), {
+        method: "GET",
+        headers: {
+          "User-Agent": NOMINATIM_USER_AGENT,
+          Accept: "application/json",
+        },
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new NominatimError(
+          `Nominatim API returned ${res.status}: ${body.slice(0, 200)}`,
+          res.status,
+        );
+      }
+
+      const data = (await res.json()) as RawNominatimResult[];
+      return data.map(parseNominatimResult).filter((r): r is GeocodeResult => r !== null);
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const data = (await res.json()) as RawNominatimResult[];
-    return data.map(parseNominatimResult).filter((r): r is GeocodeResult => r !== null);
-  } finally {
-    clearTimeout(timeout);
-  }
+  });
 }
 
 export async function reverseGeocode(
   coords: Coordinates,
   endpoint?: string,
 ): Promise<string | null> {
-  const url = new URL("/reverse", endpoint || NOMINATIM_ENDPOINT);
-  url.searchParams.set("lat", String(coords.lat));
-  url.searchParams.set("lon", String(coords.lon));
-  url.searchParams.set("format", "json");
-  url.searchParams.set("zoom", "18");
+  return withRetry(async () => {
+    await nominatimLimiter.acquire();
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), NOMINATIM_TIMEOUT_MS);
+    const url = new URL("/reverse", endpoint || NOMINATIM_ENDPOINT);
+    url.searchParams.set("lat", String(coords.lat));
+    url.searchParams.set("lon", String(coords.lon));
+    url.searchParams.set("format", "json");
+    url.searchParams.set("zoom", "18");
 
-  try {
-    const res = await fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        "User-Agent": NOMINATIM_USER_AGENT,
-        Accept: "application/json",
-      },
-      signal: controller.signal,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), NOMINATIM_TIMEOUT_MS);
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new NominatimError(
-        `Nominatim reverse API returned ${res.status}: ${body.slice(0, 200)}`,
-        res.status,
-      );
+    try {
+      const res = await fetch(url.toString(), {
+        method: "GET",
+        headers: {
+          "User-Agent": NOMINATIM_USER_AGENT,
+          Accept: "application/json",
+        },
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new NominatimError(
+          `Nominatim reverse API returned ${res.status}: ${body.slice(0, 200)}`,
+          res.status,
+        );
+      }
+
+      const data = (await res.json()) as RawNominatimReverseResult;
+      return data.display_name ?? null;
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const data = (await res.json()) as RawNominatimReverseResult;
-    return data.display_name ?? null;
-  } finally {
-    clearTimeout(timeout);
-  }
+  });
 }
 
 interface RawNominatimResult {
