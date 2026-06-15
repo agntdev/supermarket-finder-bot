@@ -13,13 +13,8 @@ import {
 import {
   buildSearchRequest,
 } from "./prefs";
-import {
-  cachedQueryOverpass,
-} from "./overpass";
 import { InMemoryCache } from "./cache";
-import {
-  filterOpenNow,
-} from "./oh_parser";
+import { searchNearby } from "./search";
 import {
   formatPlaceCard,
   noResultsMessage,
@@ -106,11 +101,7 @@ bot.command("nearby", async (ctx) => {
 
   try {
     const req = buildSearchRequest(prefs.lastLocation, prefs);
-    let places = await cachedQueryOverpass(req, overpassCache);
-
-    if (prefs.defaultOpenNow) {
-      places = filterOpenNow(places);
-    }
+    const places = await searchNearby(req, overpassCache);
 
     if (places.length === 0) {
       await ctx.reply(
@@ -157,11 +148,7 @@ bot.on("message:location", async (ctx) => {
   try {
     const prefs = ctx.session.prefs;
     const req = buildSearchRequest(coords, prefs);
-    let places = await cachedQueryOverpass(req, overpassCache);
-
-    if (prefs.defaultOpenNow) {
-      places = filterOpenNow(places);
-    }
+    const places = await searchNearby(req, overpassCache);
 
     if (places.length === 0) {
       await ctx.reply(
@@ -223,11 +210,7 @@ bot.on("message:text", async (ctx) => {
         { lat: c.lat, lon: c.lon },
         prefs,
       );
-      let places = await cachedQueryOverpass(req, overpassCache);
-
-      if (prefs.defaultOpenNow) {
-        places = filterOpenNow(places);
-      }
+      const places = await searchNearby(req, overpassCache);
 
       if (places.length === 0) {
         await ctx.reply(
@@ -309,11 +292,7 @@ bot.on("inline_query", async (ctx) => {
 
   try {
     const req = buildSearchRequest(origin, prefs);
-    let places = await cachedQueryOverpass(req, overpassCache);
-
-    if (prefs.defaultOpenNow) {
-      places = filterOpenNow(places);
-    }
+    const places = await searchNearby(req, overpassCache);
 
     const results = formatInlineResults(places, query);
     await ctx.answerInlineQuery(results, { cache_time: 60 });
@@ -439,11 +418,7 @@ bot.callbackQuery(/^geocode:(\d+)$/, async (ctx) => {
       { lat: c.lat, lon: c.lon },
       prefs,
     );
-    let places = await cachedQueryOverpass(req, overpassCache);
-
-    if (prefs.defaultOpenNow) {
-      places = filterOpenNow(places);
-    }
+    const places = await searchNearby(req, overpassCache);
 
     if (places.length === 0) {
       await ctx.reply(
