@@ -1,5 +1,5 @@
-import { Bot, Context, InlineKeyboard, Keyboard, type SessionFlavor, session } from "grammy";
-import type { GeocodeResult, UserPrefs } from "./types";
+import { Bot, Context, InlineKeyboard, type SessionFlavor, session } from "grammy";
+import type { Coordinates, GeocodeResult, UserPrefs } from "./types";
 import {
   DEFAULT_USER_PREFS,
   MAX_RESULTS_OPTIONS,
@@ -30,6 +30,12 @@ import {
 import {
   cachedGeocodeAddress,
 } from "./nominatim";
+import {
+  locationRequestKeyboard,
+  resolveLocationLabel,
+  buildGeocodeCandidatesMessage,
+  buildGeocodeCandidatesKeyboard,
+} from "./location";
 
 interface SessionData {
   prefs: UserPrefs;
@@ -55,10 +61,7 @@ bot.command("start", async (ctx) => {
     "Hi! I'll help you find nearby supermarkets.\n" +
       "\uD83D\uDC49 Tap \"Share Current Location\" to get started, or type an address.",
     {
-      reply_markup: new Keyboard()
-        .requestLocation("Share Current Location")
-        .resized()
-        .oneTime(),
+      reply_markup: locationRequestKeyboard(),
     },
   );
 });
@@ -92,16 +95,14 @@ bot.command("nearby", async (ctx) => {
     await ctx.reply(
       "No prior location found. Please share your location first.",
       {
-        reply_markup: new Keyboard()
-          .requestLocation("Share Current Location")
-          .resized()
-          .oneTime(),
+        reply_markup: locationRequestKeyboard(),
       },
     );
     return;
   }
 
-  await ctx.reply("Searching...");
+  const label = await resolveLocationLabel(prefs.lastLocation);
+  await ctx.reply(`Searching near ${label}...`);
 
   try {
     const req = buildSearchRequest(prefs.lastLocation, prefs);
@@ -144,19 +145,18 @@ bot.command("nearby", async (ctx) => {
 
 bot.on("message:location", async (ctx) => {
   const location = ctx.message.location;
-  ctx.session.prefs.lastLocation = {
+  const coords: Coordinates = {
     lat: location.latitude,
     lon: location.longitude,
   };
+  ctx.session.prefs.lastLocation = coords;
 
-  await ctx.reply("Searching for nearby supermarkets...");
+  const label = await resolveLocationLabel(coords);
+  await ctx.reply(`Searching near ${label}...`);
 
   try {
     const prefs = ctx.session.prefs;
-    const req = buildSearchRequest(
-      { lat: location.latitude, lon: location.longitude },
-      prefs,
-    );
+    const req = buildSearchRequest(coords, prefs);
     let places = await cachedQueryOverpass(req, overpassCache);
 
     if (prefs.defaultOpenNow) {
@@ -207,10 +207,7 @@ bot.on("message:text", async (ctx) => {
       await ctx.reply(
         "Couldn't find that location. Try a more specific address.",
         {
-          reply_markup: new Keyboard()
-            .requestLocation("Share Current Location")
-            .resized()
-            .oneTime(),
+          reply_markup: locationRequestKeyboard(),
         },
       );
       return;
@@ -260,33 +257,16 @@ bot.on("message:text", async (ctx) => {
 
     ctx.session.geocodeCandidates = candidates;
 
-    const lines = candidates.map(
-      (c, i) => `${i + 1}. ${c.displayName}`,
-    );
+    const message = buildGeocodeCandidatesMessage(query, candidates);
+    const keyboard = buildGeocodeCandidatesKeyboard(candidates);
 
-    const keyboard = new InlineKeyboard();
-    for (let i = 0; i < candidates.length; i++) {
-      keyboard.text(`Select ${i + 1}`, `geocode:${i}`);
-      if ((i + 1) % 2 === 0 && i < candidates.length - 1) {
-        keyboard.row();
-      }
-    }
-    keyboard.row();
-    keyboard.text("Cancel", "geocode:cancel");
-
-    await ctx.reply(
-      `I found multiple locations for "${query}". Please select one:\n\n${lines.join("\n")}`,
-      { reply_markup: keyboard },
-    );
+    await ctx.reply(message, { reply_markup: keyboard });
   } catch (err) {
     console.error("Geocode error:", err);
     await ctx.reply(
       "Temporarily unable to look up addresses. Please try again or share your GPS location.",
       {
-        reply_markup: new Keyboard()
-          .requestLocation("Share Current Location")
-          .resized()
-          .oneTime(),
+        reply_markup: locationRequestKeyboard(),
       },
     );
   }
