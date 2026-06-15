@@ -10,7 +10,8 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "grammy": "^1.30.0"
+    "grammy": "^1.30.0",
+    "opening_hours": "^3.8.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
