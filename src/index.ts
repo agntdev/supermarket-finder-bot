@@ -26,6 +26,7 @@ import {
 } from "./formatting";
 import {
   cachedGeocodeAddress,
+  NominatimError,
 } from "./nominatim";
 import {
   locationRequestKeyboard,
@@ -34,6 +35,8 @@ import {
   buildGeocodeCandidatesKeyboard,
   parseCoordinates,
 } from "./location";
+import { setAdminApi, alertCriticalError, alertQuotaWarning } from "./admin_alerts";
+import { OverpassError } from "./overpass";
 
 interface SessionData {
   prefs: UserPrefs;
@@ -45,6 +48,21 @@ type BotContext = Context & SessionFlavor<SessionData>;
 const bot = new Bot<BotContext>(process.env.BOT_TOKEN || "");
 
 const overpassCache = new InMemoryCache();
+
+setAdminApi(bot.api);
+
+function isQuotaError(err: unknown): err is { code: number; message: string } {
+  return (
+    (err instanceof OverpassError || err instanceof NominatimError) &&
+    err.code === 429
+  );
+}
+
+function checkQuotaAlert(err: unknown, service: string): void {
+  if (isQuotaError(err)) {
+    alertQuotaWarning(service, `Status: 429 — ${err.message}`);
+  }
+}
 
 async function runSearchAndReply(
   ctx: BotContext,
@@ -143,6 +161,7 @@ bot.command("nearby", async (ctx) => {
     await runSearchAndReply(ctx, prefs.lastLocation, prefs, label);
   } catch (err) {
     console.error("Nearby search error:", err);
+    checkQuotaAlert(err, "Overpass (nearby)");
     await ctx.reply(
       "Temporarily unable to fetch data. Please try again in a few minutes.",
       {
@@ -170,6 +189,7 @@ bot.on("message:location", async (ctx) => {
     await runSearchAndReply(ctx, coords, prefs, label);
   } catch (err) {
     console.error("Location search error:", err);
+    checkQuotaAlert(err, "Overpass (location)");
     await ctx.reply(
       "Temporarily unable to fetch data. Please try again in a few minutes.",
       {
@@ -223,6 +243,7 @@ bot.on("message:text", async (ctx) => {
     await ctx.reply(message, { reply_markup: keyboard });
   } catch (err) {
     console.error("Geocode error:", err);
+    checkQuotaAlert(err, "Nominatim (geocode)");
     await ctx.reply(
       "Temporarily unable to look up addresses. Please try again or share your GPS location.",
       {
@@ -262,6 +283,7 @@ bot.on("inline_query", async (ctx) => {
       }
     } catch (err) {
       console.error("Inline geocode error:", err);
+      checkQuotaAlert(err, "Nominatim (inline geocode)");
     }
   }
 
@@ -301,6 +323,7 @@ bot.on("inline_query", async (ctx) => {
     await ctx.answerInlineQuery(results, { cache_time: 60 });
   } catch (err) {
     console.error("Inline query error:", err);
+    checkQuotaAlert(err, "Overpass (inline)");
     await ctx.answerInlineQuery(
       [
         {
@@ -425,6 +448,7 @@ bot.callbackQuery(/^geocode:(\d+)$/, async (ctx) => {
     );
   } catch (err) {
     console.error("Geocode search error:", err);
+    checkQuotaAlert(err, "Overpass (geocode select)");
     await ctx.reply(
       "Temporarily unable to fetch data. Please try again in a few minutes.",
       {
@@ -452,7 +476,7 @@ bot.callbackQuery("geocode:cancel", async (ctx) => {
   await ctx.answerCallbackQuery();
 });
 
-bot.catch((err) => {
+bot.catch(async (err) => {
   const code = (err.error as Record<string, unknown> | undefined)?.error_code;
   if (code === 403) {
     console.error(
@@ -462,6 +486,12 @@ bot.catch((err) => {
     return;
   }
   console.error("Bot error:", err.error);
+  await alertCriticalError(
+    err.error,
+    "Bot framework",
+    err.ctx.chat?.id,
+    err.ctx.from?.username,
+  );
 });
 
 bot.callbackQuery("error:location_denied", async (ctx) => {
@@ -505,6 +535,7 @@ bot.callbackQuery("error:retry", async (ctx) => {
     await runSearchAndReply(ctx, prefs.lastLocation, prefs, label);
   } catch (err) {
     console.error("Retry search error:", err);
+    checkQuotaAlert(err, "Overpass (retry)");
     await ctx.reply(
       "Still unable to fetch data. The service may be temporarily down. Please try again later.",
     );
@@ -531,6 +562,7 @@ bot.callbackQuery("results:radius_up", async (ctx) => {
     await runSearchAndReply(ctx, prefs.lastLocation, prefs, label);
   } catch (err) {
     console.error("Radius up search error:", err);
+    checkQuotaAlert(err, "Overpass (radius up)");
     await ctx.reply(
       "Temporarily unable to fetch data. Please try again in a few minutes.",
       {
@@ -562,6 +594,7 @@ bot.callbackQuery("results:radius_down", async (ctx) => {
     await runSearchAndReply(ctx, prefs.lastLocation, prefs, label);
   } catch (err) {
     console.error("Radius down search error:", err);
+    checkQuotaAlert(err, "Overpass (radius down)");
     await ctx.reply(
       "Temporarily unable to fetch data. Please try again in a few minutes.",
       {
