@@ -72,3 +72,17 @@ export const DEFAULT_USER_PREFS: UserPrefs = {
 
 export const RADIUS_OPTIONS = [500, 1000, 2000, 5000];
 export const MAX_RESULTS_OPTIONS = [3, 5, 10];
+
+export interface GeocodeResult {
+  displayName: string;
+  lat: number;
+  lon: number;
+  type: string;
+  osmType: string;
+  osmId: number;
+}
+
+export const NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org";
+export const NOMINATIM_TIMEOUT_MS = 10_000;
+export const NOMINATIM_USER_AGENT =
+  "SupermarketFinderBot/1.0 (Telegram bot; contact@example.com)";
