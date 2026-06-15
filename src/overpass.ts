@@ -6,6 +6,7 @@ import type {
   SearchRequest,
 } from "./types";
 import {
+  CACHE_TTL_MS,
   CONVENIENCE_TAGS,
   DEFAULT_MAX_RESULTS,
   DEFAULT_RADIUS,
@@ -14,6 +15,7 @@ import {
   OVERPASS_TIMEOUT_MS,
   SUPERMARKET_TAGS,
 } from "./types";
+import { buildCacheKey, TTLCache } from "./cache";
 
 const EARTH_RADIUS_M = 6_371_000;
 
@@ -138,6 +140,19 @@ export function parseOverpassResponse(
   return places;
 }
 
+const overpassCache = new TTLCache<Place[]>(CACHE_TTL_MS);
+
+function cacheKeyForSearch(req: SearchRequest): string {
+  return buildCacheKey({
+    lat: req.origin.lat,
+    lon: req.origin.lon,
+    radius: req.radius,
+    maxResults: req.maxResults,
+    includeConvenience: req.includeConvenience,
+    openNow: req.openNow,
+  });
+}
+
 export class OverpassError extends Error {
   code: number;
   constructor(message: string, code: number) {
@@ -151,6 +166,10 @@ export async function queryOverpass(
   req: SearchRequest,
   endpoint?: string,
 ): Promise<Place[]> {
+  const key = cacheKeyForSearch(req);
+  const cached = overpassCache.get(key);
+  if (cached) return cached;
+
   const query = buildOverpassQuery(req);
   const url = endpoint || OVERPASS_ENDPOINT;
 
@@ -178,10 +197,20 @@ export async function queryOverpass(
     }
 
     const data = (await res.json()) as OverpassResponse;
-    return parseOverpassResponse(data, req.origin);
+    const places = parseOverpassResponse(data, req.origin);
+    overpassCache.set(key, places);
+    return places;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export function clearOverpassCache(): void {
+  overpassCache.clear();
+}
+
+export function getOverpassCacheSize(): number {
+  return overpassCache.size;
 }
 
 export function defaultSearchRequest(

@@ -53,3 +53,6 @@ export const OVERPASS_TIMEOUT_MS = 30_000;
 export const SUPERMARKET_TAGS = ["shop=supermarket"];
 export const CONVENIENCE_TAGS = ["shop=convenience"];
 export const MARKETPLACE_TAGS = ["amenity=marketplace"];
+
+export const CACHE_TTL_MS = 3_600_000;
+export const NOMINATIM_CACHE_TTL_MS = 3_600_000;
