@@ -30,6 +30,7 @@ import {
   resolveLocationLabel,
   buildGeocodeCandidatesMessage,
   buildGeocodeCandidatesKeyboard,
+  parseCoordinates,
 } from "./location";
 
 interface SessionData {
@@ -257,17 +258,40 @@ bot.on("message:text", async (ctx) => {
 
 bot.on("inline_query", async (ctx) => {
   const query = ctx.inlineQuery.query.trim();
-  const prefs = ctx.session.prefs;
-  let origin = prefs.lastLocation;
+  const inlineLocation = ctx.inlineQuery.location;
+  let origin: Coordinates | null = null;
+  let sourceLabel = "";
 
-  if (query) {
+  if (inlineLocation) {
+    origin = { lat: inlineLocation.latitude, lon: inlineLocation.longitude };
+    sourceLabel = await resolveLocationLabel(origin);
+  }
+
+  if (!origin && query) {
+    const parsed = parseCoordinates(query);
+    if (parsed) {
+      origin = parsed;
+      sourceLabel = await resolveLocationLabel(origin);
+    }
+  }
+
+  if (!origin && query) {
     try {
       const candidates = await cachedGeocodeAddress(query, overpassCache);
       if (candidates.length > 0) {
         origin = { lat: candidates[0].lat, lon: candidates[0].lon };
+        sourceLabel = candidates[0].displayName.split(",")[0];
       }
     } catch (err) {
       console.error("Inline geocode error:", err);
+    }
+  }
+
+  if (!origin) {
+    const prefs = ctx.session.prefs;
+    if (prefs.lastLocation) {
+      origin = prefs.lastLocation;
+      sourceLabel = await resolveLocationLabel(origin);
     }
   }
 
@@ -277,11 +301,12 @@ bot.on("inline_query", async (ctx) => {
         {
           type: "article",
           id: "no_location",
-          title: "Share your location first",
-          description: "Open a chat with me and share your location to get started.",
+          title: "Share your location or type an address",
+          description:
+            "Use location mode in the inline query, or type an address/coordinates.",
           input_message_content: {
             message_text:
-              "Share your location in a direct chat with me to enable inline supermarket search.",
+              "Share your location or type an address to find nearby supermarkets via inline mode.",
           },
         },
       ],
@@ -291,10 +316,10 @@ bot.on("inline_query", async (ctx) => {
   }
 
   try {
-    const req = buildSearchRequest(origin, prefs);
+    const req = buildSearchRequest(origin, ctx.session.prefs);
     const places = await searchNearby(req, overpassCache);
 
-    const results = formatInlineResults(places, query);
+    const results = formatInlineResults(places, query || sourceLabel);
     await ctx.answerInlineQuery(results, { cache_time: 60 });
   } catch (err) {
     console.error("Inline query error:", err);

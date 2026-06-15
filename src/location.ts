@@ -17,6 +17,17 @@ export async function resolveLocationLabel(
   return `${coords.lat.toFixed(4)}, ${coords.lon.toFixed(4)}`;
 }
 
+export function parseCoordinates(text: string): Coordinates | null {
+  const trimmed = text.trim();
+  const parts = trimmed.split(/[,\s]+/).filter(Boolean);
+  if (parts.length < 2) return null;
+  const lat = parseFloat(parts[0]);
+  const lon = parseFloat(parts[1]);
+  if (isNaN(lat) || isNaN(lon)) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
 export function buildGeocodeCandidatesMessage(
   query: string,
   candidates: GeocodeResult[],
