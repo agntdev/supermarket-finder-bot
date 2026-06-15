@@ -5,6 +5,7 @@ import {
   NOMINATIM_USER_AGENT,
 } from "./types";
 import type { InMemoryCache } from "./cache";
+import { fetchWithRetry } from "./retry";
 
 export class NominatimError extends Error {
   code: number;
@@ -30,7 +31,7 @@ export async function geocodeAddress(
   const timeout = setTimeout(() => controller.abort(), NOMINATIM_TIMEOUT_MS);
 
   try {
-    const res = await fetch(url.toString(), {
+    const res = await fetchWithRetry(url.toString(), {
       method: "GET",
       headers: {
         "User-Agent": NOMINATIM_USER_AGENT,
@@ -68,7 +69,7 @@ export async function reverseGeocode(
   const timeout = setTimeout(() => controller.abort(), NOMINATIM_TIMEOUT_MS);
 
   try {
-    const res = await fetch(url.toString(), {
+    const res = await fetchWithRetry(url.toString(), {
       method: "GET",
       headers: {
         "User-Agent": NOMINATIM_USER_AGENT,

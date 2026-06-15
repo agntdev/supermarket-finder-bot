@@ -1,4 +1,4 @@
-import { Bot, Context, InlineKeyboard, Keyboard, type SessionFlavor, session } from "grammy";
+import { Bot, Context, GrammyError, InlineKeyboard, Keyboard, type SessionFlavor, session } from "grammy";
 import type { GeocodeResult, UserPrefs } from "./types";
 import {
   DEFAULT_USER_PREFS,
@@ -30,6 +30,8 @@ import {
 import {
   cachedGeocodeAddress,
 } from "./nominatim";
+import { userRateLimiter, inlineRateLimiter } from "./ratelimit";
+import { isPermissionError, isFloodError, getRetryAfterSeconds } from "./permission";
 
 interface SessionData {
   prefs: UserPrefs;
@@ -49,6 +51,43 @@ bot.use(
     }),
   }),
 );
+
+bot.use(async (ctx, next) => {
+  const userId = ctx.from?.id;
+  if (!userId) return next();
+
+  if (ctx.inlineQuery) {
+    if (!inlineRateLimiter.consume(String(userId))) {
+      await ctx.answerInlineQuery(
+        [
+          {
+            type: "article",
+            id: "rate_limited",
+            title: "Too many requests",
+            description: "Please wait a moment before searching again.",
+            input_message_content: {
+              message_text: "You're searching too fast. Please wait a moment.",
+            },
+          },
+        ],
+        { cache_time: 30 },
+      );
+      return;
+    }
+    return next();
+  }
+
+  if (!userRateLimiter.consume(String(userId))) {
+    try {
+      await ctx.reply("Too many requests. Please wait a moment and try again.");
+    } catch {
+      // Silently drop if we can't reply (e.g., in a channel)
+    }
+    return;
+  }
+
+  return next();
+});
 
 bot.command("start", async (ctx) => {
   await ctx.reply(
@@ -513,6 +552,21 @@ bot.callbackQuery("geocode:cancel", async (ctx) => {
 });
 
 bot.catch((err) => {
+  if (isPermissionError(err.error)) {
+    console.warn(
+      `Permission error for chat ${err.ctx.chat?.id}: ${(err.error as GrammyError).description}`,
+    );
+    return;
+  }
+
+  if (isFloodError(err.error)) {
+    const retryAfter = getRetryAfterSeconds(err.error);
+    console.warn(
+      `Flood error: retry after ${retryAfter ?? "unknown"}s`,
+    );
+    return;
+  }
+
   console.error("Bot error:", err.error);
 });
 

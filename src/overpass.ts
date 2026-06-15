@@ -15,6 +15,7 @@ import {
   SUPERMARKET_TAGS,
 } from "./types";
 import type { InMemoryCache } from "./cache";
+import { fetchWithRetry } from "./retry";
 
 const EARTH_RADIUS_M = 6_371_000;
 
@@ -159,7 +160,7 @@ export async function queryOverpass(
   const timeout = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithRetry(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
