@@ -1,5 +1,5 @@
 import { Bot, Context, InlineKeyboard, Keyboard, type SessionFlavor, session } from "grammy";
-import type { UserPrefs } from "./types";
+import type { GeocodeResult, UserPrefs } from "./types";
 import {
   DEFAULT_USER_PREFS,
   MAX_RESULTS_OPTIONS,
@@ -27,9 +27,13 @@ import {
   postResultsKeyboard,
   formatInlineResults,
 } from "./formatting";
+import {
+  cachedGeocodeAddress,
+} from "./nominatim";
 
 interface SessionData {
   prefs: UserPrefs;
+  geocodeCandidates?: GeocodeResult[];
 }
 
 type BotContext = Context & SessionFlavor<SessionData>;
@@ -191,22 +195,120 @@ bot.on("message:location", async (ctx) => {
 });
 
 bot.on("message:text", async (ctx) => {
-  await ctx.reply(
-    'To search by address, I need to look up that location.\nShare your GPS location with the button below for the fastest results:',
-    {
-      reply_markup: new Keyboard()
-        .requestLocation("Share Current Location")
-        .resized()
-        .oneTime(),
-    },
-  );
+  const query = ctx.message.text.trim();
+  if (!query) return;
+
+  await ctx.reply("Looking up that address...");
+
+  try {
+    const candidates = await cachedGeocodeAddress(query, overpassCache);
+
+    if (candidates.length === 0) {
+      await ctx.reply(
+        "Couldn't find that location. Try a more specific address.",
+        {
+          reply_markup: new Keyboard()
+            .requestLocation("Share Current Location")
+            .resized()
+            .oneTime(),
+        },
+      );
+      return;
+    }
+
+    if (candidates.length === 1) {
+      const c = candidates[0];
+      ctx.session.prefs.lastLocation = { lat: c.lat, lon: c.lon };
+      ctx.session.geocodeCandidates = undefined;
+
+      const prefs = ctx.session.prefs;
+      const req = buildSearchRequest(
+        { lat: c.lat, lon: c.lon },
+        prefs,
+      );
+      let places = await cachedQueryOverpass(req, overpassCache);
+
+      if (prefs.defaultOpenNow) {
+        places = filterOpenNow(places);
+      }
+
+      if (places.length === 0) {
+        await ctx.reply(
+          noResultsMessage(req.radius, req.includeConvenience),
+          {
+            reply_markup: postResultsKeyboard(prefs),
+          },
+        );
+        return;
+      }
+
+      for (const place of places) {
+        await ctx.reply(formatPlaceCard(place), {
+          parse_mode: "MarkdownV2",
+          reply_markup: placeKeyboard(place),
+        });
+      }
+
+      await ctx.reply(
+        `Found ${places.length} supermarket${places.length !== 1 ? "s" : ""} near ${c.displayName.split(",")[0]}.`,
+        {
+          reply_markup: postResultsKeyboard(prefs),
+        },
+      );
+      return;
+    }
+
+    ctx.session.geocodeCandidates = candidates;
+
+    const lines = candidates.map(
+      (c, i) => `${i + 1}. ${c.displayName}`,
+    );
+
+    const keyboard = new InlineKeyboard();
+    for (let i = 0; i < candidates.length; i++) {
+      keyboard.text(`Select ${i + 1}`, `geocode:${i}`);
+      if ((i + 1) % 2 === 0 && i < candidates.length - 1) {
+        keyboard.row();
+      }
+    }
+    keyboard.row();
+    keyboard.text("Cancel", "geocode:cancel");
+
+    await ctx.reply(
+      `I found multiple locations for "${query}". Please select one:\n\n${lines.join("\n")}`,
+      { reply_markup: keyboard },
+    );
+  } catch (err) {
+    console.error("Geocode error:", err);
+    await ctx.reply(
+      "Temporarily unable to look up addresses. Please try again or share your GPS location.",
+      {
+        reply_markup: new Keyboard()
+          .requestLocation("Share Current Location")
+          .resized()
+          .oneTime(),
+      },
+    );
+  }
 });
 
 bot.on("inline_query", async (ctx) => {
   const query = ctx.inlineQuery.query.trim();
   const prefs = ctx.session.prefs;
+  let origin = prefs.lastLocation;
 
-  if (!prefs.lastLocation) {
+  if (query) {
+    try {
+      const candidates = await cachedGeocodeAddress(query, overpassCache);
+      if (candidates.length > 0) {
+        origin = { lat: candidates[0].lat, lon: candidates[0].lon };
+      }
+    } catch (err) {
+      console.error("Inline geocode error:", err);
+    }
+  }
+
+  if (!origin) {
     await ctx.answerInlineQuery(
       [
         {
@@ -226,7 +328,7 @@ bot.on("inline_query", async (ctx) => {
   }
 
   try {
-    const req = buildSearchRequest(prefs.lastLocation, prefs);
+    const req = buildSearchRequest(origin, prefs);
     let places = await cachedQueryOverpass(req, overpassCache);
 
     if (prefs.defaultOpenNow) {
@@ -331,6 +433,82 @@ bot.callbackQuery("back:settings", async (ctx) => {
   await ctx.editMessageText(settingsMessage(prefs), {
     reply_markup: settingsKeyboard(prefs),
   });
+  await ctx.answerCallbackQuery();
+});
+
+bot.callbackQuery(/^geocode:(\d+)$/, async (ctx) => {
+  const index = parseInt(ctx.match[1], 10);
+  const candidates = ctx.session.geocodeCandidates;
+
+  if (!candidates || index < 0 || index >= candidates.length) {
+    await ctx.answerCallbackQuery({ text: "Selection expired. Please try again." });
+    return;
+  }
+
+  const c = candidates[index];
+  ctx.session.prefs.lastLocation = { lat: c.lat, lon: c.lon };
+  ctx.session.geocodeCandidates = undefined;
+
+  await ctx.editMessageText(
+    `Selected: ${c.displayName}\n\nSearching for nearby supermarkets...`,
+  );
+
+  try {
+    const prefs = ctx.session.prefs;
+    const req = buildSearchRequest(
+      { lat: c.lat, lon: c.lon },
+      prefs,
+    );
+    let places = await cachedQueryOverpass(req, overpassCache);
+
+    if (prefs.defaultOpenNow) {
+      places = filterOpenNow(places);
+    }
+
+    if (places.length === 0) {
+      await ctx.reply(
+        noResultsMessage(req.radius, req.includeConvenience),
+        {
+          reply_markup: postResultsKeyboard(prefs),
+        },
+      );
+      return;
+    }
+
+    for (const place of places) {
+      await ctx.reply(formatPlaceCard(place), {
+        parse_mode: "MarkdownV2",
+        reply_markup: placeKeyboard(place),
+      });
+    }
+
+    await ctx.reply(
+      `Found ${places.length} supermarket${places.length !== 1 ? "s" : ""} near ${c.displayName.split(",")[0]}.`,
+      {
+        reply_markup: postResultsKeyboard(prefs),
+      },
+    );
+  } catch (err) {
+    console.error("Geocode search error:", err);
+    await ctx.reply(
+      "Temporarily unable to fetch data. Please try again in a few minutes.",
+    );
+  }
+
+  await ctx.answerCallbackQuery();
+});
+
+bot.callbackQuery("geocode:cancel", async (ctx) => {
+  ctx.session.geocodeCandidates = undefined;
+  await ctx.editMessageText(
+    "Search cancelled. Share your location or type another address to try again.",
+    {
+      reply_markup: new InlineKeyboard().text(
+        "Main Menu",
+        "back:main",
+      ),
+    },
+  );
   await ctx.answerCallbackQuery();
 });
 
