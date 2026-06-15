@@ -14,6 +14,7 @@ import {
   OVERPASS_TIMEOUT_MS,
   SUPERMARKET_TAGS,
 } from "./types";
+import type { InMemoryCache } from "./cache";
 
 const EARTH_RADIUS_M = 6_371_000;
 
@@ -196,4 +197,31 @@ export function defaultSearchRequest(
     openNow: false,
     ...overrides,
   };
+}
+
+export const OVERPASS_CACHE_TTL_MS = 60 * 60 * 1000;
+
+export function buildOverpassCacheKey(req: SearchRequest): string {
+  return [
+    "overpass",
+    req.origin.lat.toFixed(4),
+    req.origin.lon.toFixed(4),
+    req.radius,
+    req.maxResults,
+    req.includeConvenience ? "1" : "0",
+  ].join(":");
+}
+
+export async function cachedQueryOverpass(
+  req: SearchRequest,
+  cache: InMemoryCache,
+  endpoint?: string,
+): Promise<Place[]> {
+  const key = buildOverpassCacheKey(req);
+  const cached = cache.get<Place[]>(key);
+  if (cached) return cached;
+
+  const places = await queryOverpass(req, endpoint);
+  cache.set(key, places, OVERPASS_CACHE_TTL_MS);
+  return places;
 }

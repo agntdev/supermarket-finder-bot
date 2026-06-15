@@ -14,8 +14,9 @@ import {
   buildSearchRequest,
 } from "./prefs";
 import {
-  queryOverpass,
+  cachedQueryOverpass,
 } from "./overpass";
+import { InMemoryCache } from "./cache";
 import {
   filterOpenNow,
 } from "./oh_parser";
@@ -34,6 +35,8 @@ interface SessionData {
 type BotContext = Context & SessionFlavor<SessionData>;
 
 const bot = new Bot<BotContext>(process.env.BOT_TOKEN || "");
+
+const overpassCache = new InMemoryCache();
 
 bot.use(
   session<SessionData, BotContext>({
@@ -98,7 +101,7 @@ bot.command("nearby", async (ctx) => {
 
   try {
     const req = buildSearchRequest(prefs.lastLocation, prefs);
-    let places = await queryOverpass(req);
+    let places = await cachedQueryOverpass(req, overpassCache);
 
     if (prefs.defaultOpenNow) {
       places = filterOpenNow(places);
@@ -150,7 +153,7 @@ bot.on("message:location", async (ctx) => {
       { lat: location.latitude, lon: location.longitude },
       prefs,
     );
-    let places = await queryOverpass(req);
+    let places = await cachedQueryOverpass(req, overpassCache);
 
     if (prefs.defaultOpenNow) {
       places = filterOpenNow(places);
@@ -224,7 +227,7 @@ bot.on("inline_query", async (ctx) => {
 
   try {
     const req = buildSearchRequest(prefs.lastLocation, prefs);
-    let places = await queryOverpass(req);
+    let places = await cachedQueryOverpass(req, overpassCache);
 
     if (prefs.defaultOpenNow) {
       places = filterOpenNow(places);
