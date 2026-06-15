@@ -17,9 +17,11 @@ import { InMemoryCache } from "./cache";
 import { searchNearby } from "./search";
 import {
   formatPlaceCard,
+  noResultsKeyboard,
   noResultsMessage,
   placeKeyboard,
   postResultsKeyboard,
+  resultsSummary,
   formatInlineResults,
 } from "./formatting";
 import {
@@ -42,6 +44,40 @@ type BotContext = Context & SessionFlavor<SessionData>;
 const bot = new Bot<BotContext>(process.env.BOT_TOKEN || "");
 
 const overpassCache = new InMemoryCache();
+
+async function runSearchAndReply(
+  ctx: BotContext,
+  origin: Coordinates,
+  prefs: UserPrefs,
+  locationLabel?: string,
+): Promise<void> {
+  const req = buildSearchRequest(origin, prefs);
+  const places = await searchNearby(req, overpassCache);
+
+  if (places.length === 0) {
+    await ctx.reply(
+      noResultsMessage(req.radius, req.includeConvenience),
+      {
+        reply_markup: noResultsKeyboard(prefs),
+      },
+    );
+    return;
+  }
+
+  for (const place of places) {
+    await ctx.reply(formatPlaceCard(place), {
+      parse_mode: "MarkdownV2",
+      reply_markup: placeKeyboard(place),
+    });
+  }
+
+  await ctx.reply(
+    resultsSummary(places, locationLabel),
+    {
+      reply_markup: postResultsKeyboard(prefs),
+    },
+  );
+}
 
 bot.use(
   session<SessionData, BotContext>({
@@ -100,32 +136,7 @@ bot.command("nearby", async (ctx) => {
   await ctx.reply(`Searching near ${label}...`);
 
   try {
-    const req = buildSearchRequest(prefs.lastLocation, prefs);
-    const places = await searchNearby(req, overpassCache);
-
-    if (places.length === 0) {
-      await ctx.reply(
-        noResultsMessage(req.radius, req.includeConvenience),
-        {
-          reply_markup: postResultsKeyboard(prefs),
-        },
-      );
-      return;
-    }
-
-    for (const place of places) {
-      await ctx.reply(formatPlaceCard(place), {
-        parse_mode: "MarkdownV2",
-        reply_markup: placeKeyboard(place),
-      });
-    }
-
-    await ctx.reply(
-      `Found ${places.length} supermarket${places.length !== 1 ? "s" : ""}.`,
-      {
-        reply_markup: postResultsKeyboard(prefs),
-      },
-    );
+    await runSearchAndReply(ctx, prefs.lastLocation, prefs, label);
   } catch (err) {
     console.error("Nearby search error:", err);
     await ctx.reply(
@@ -147,32 +158,7 @@ bot.on("message:location", async (ctx) => {
 
   try {
     const prefs = ctx.session.prefs;
-    const req = buildSearchRequest(coords, prefs);
-    const places = await searchNearby(req, overpassCache);
-
-    if (places.length === 0) {
-      await ctx.reply(
-        noResultsMessage(req.radius, req.includeConvenience),
-        {
-          reply_markup: postResultsKeyboard(prefs),
-        },
-      );
-      return;
-    }
-
-    for (const place of places) {
-      await ctx.reply(formatPlaceCard(place), {
-        parse_mode: "MarkdownV2",
-        reply_markup: placeKeyboard(place),
-      });
-    }
-
-    await ctx.reply(
-      `Found ${places.length} supermarket${places.length !== 1 ? "s" : ""}.`,
-      {
-        reply_markup: postResultsKeyboard(prefs),
-      },
-    );
+    await runSearchAndReply(ctx, coords, prefs, label);
   } catch (err) {
     console.error("Location search error:", err);
     await ctx.reply(
@@ -206,34 +192,11 @@ bot.on("message:text", async (ctx) => {
       ctx.session.geocodeCandidates = undefined;
 
       const prefs = ctx.session.prefs;
-      const req = buildSearchRequest(
+      await runSearchAndReply(
+        ctx,
         { lat: c.lat, lon: c.lon },
         prefs,
-      );
-      const places = await searchNearby(req, overpassCache);
-
-      if (places.length === 0) {
-        await ctx.reply(
-          noResultsMessage(req.radius, req.includeConvenience),
-          {
-            reply_markup: postResultsKeyboard(prefs),
-          },
-        );
-        return;
-      }
-
-      for (const place of places) {
-        await ctx.reply(formatPlaceCard(place), {
-          parse_mode: "MarkdownV2",
-          reply_markup: placeKeyboard(place),
-        });
-      }
-
-      await ctx.reply(
-        `Found ${places.length} supermarket${places.length !== 1 ? "s" : ""} near ${c.displayName.split(",")[0]}.`,
-        {
-          reply_markup: postResultsKeyboard(prefs),
-        },
+        c.displayName,
       );
       return;
     }
@@ -414,34 +377,11 @@ bot.callbackQuery(/^geocode:(\d+)$/, async (ctx) => {
 
   try {
     const prefs = ctx.session.prefs;
-    const req = buildSearchRequest(
+    await runSearchAndReply(
+      ctx,
       { lat: c.lat, lon: c.lon },
       prefs,
-    );
-    const places = await searchNearby(req, overpassCache);
-
-    if (places.length === 0) {
-      await ctx.reply(
-        noResultsMessage(req.radius, req.includeConvenience),
-        {
-          reply_markup: postResultsKeyboard(prefs),
-        },
-      );
-      return;
-    }
-
-    for (const place of places) {
-      await ctx.reply(formatPlaceCard(place), {
-        parse_mode: "MarkdownV2",
-        reply_markup: placeKeyboard(place),
-      });
-    }
-
-    await ctx.reply(
-      `Found ${places.length} supermarket${places.length !== 1 ? "s" : ""} near ${c.displayName.split(",")[0]}.`,
-      {
-        reply_markup: postResultsKeyboard(prefs),
-      },
+      c.displayName,
     );
   } catch (err) {
     console.error("Geocode search error:", err);
@@ -469,6 +409,54 @@ bot.callbackQuery("geocode:cancel", async (ctx) => {
 
 bot.catch((err) => {
   console.error("Bot error:", err.error);
+});
+
+bot.callbackQuery("results:radius_up", async (ctx) => {
+  const prefs = ctx.session.prefs;
+  if (!prefs.lastLocation) {
+    await ctx.answerCallbackQuery({ text: "No prior location to search." });
+    return;
+  }
+  const currentIdx = RADIUS_OPTIONS.indexOf(prefs.defaultRadius);
+  if (currentIdx >= RADIUS_OPTIONS.length - 1) {
+    await ctx.answerCallbackQuery({ text: "Already at maximum radius." });
+    return;
+  }
+  prefs.defaultRadius = RADIUS_OPTIONS[currentIdx + 1];
+  await ctx.editMessageText(`Searching with ${formatRadius(prefs.defaultRadius)} radius...`);
+  await ctx.answerCallbackQuery({ text: `Radius increased to ${formatRadius(prefs.defaultRadius)}.` });
+
+  try {
+    const label = await resolveLocationLabel(prefs.lastLocation);
+    await runSearchAndReply(ctx, prefs.lastLocation, prefs, label);
+  } catch (err) {
+    console.error("Radius up search error:", err);
+    await ctx.reply("Temporarily unable to fetch data. Please try again in a few minutes.");
+  }
+});
+
+bot.callbackQuery("results:radius_down", async (ctx) => {
+  const prefs = ctx.session.prefs;
+  if (!prefs.lastLocation) {
+    await ctx.answerCallbackQuery({ text: "No prior location to search." });
+    return;
+  }
+  const currentIdx = RADIUS_OPTIONS.indexOf(prefs.defaultRadius);
+  if (currentIdx <= 0) {
+    await ctx.answerCallbackQuery({ text: "Already at minimum radius." });
+    return;
+  }
+  prefs.defaultRadius = RADIUS_OPTIONS[currentIdx - 1];
+  await ctx.editMessageText(`Searching with ${formatRadius(prefs.defaultRadius)} radius...`);
+  await ctx.answerCallbackQuery({ text: `Radius decreased to ${formatRadius(prefs.defaultRadius)}.` });
+
+  try {
+    const label = await resolveLocationLabel(prefs.lastLocation);
+    await runSearchAndReply(ctx, prefs.lastLocation, prefs, label);
+  } catch (err) {
+    console.error("Radius down search error:", err);
+    await ctx.reply("Temporarily unable to fetch data. Please try again in a few minutes.");
+  }
 });
 
 export { bot };

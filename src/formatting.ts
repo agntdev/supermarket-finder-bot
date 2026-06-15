@@ -1,6 +1,7 @@
 import { InlineKeyboard } from "grammy";
 import type { InlineQueryResult } from "@grammyjs/types/inline";
 import type { Place } from "./types";
+import { RADIUS_OPTIONS } from "./types";
 
 export function formatPlaceCard(place: Place): string {
   const distStr = place.distance >= 1000
@@ -55,27 +56,68 @@ export function placeKeyboard(place: Place): InlineKeyboard {
 }
 
 export function postResultsKeyboard(
-  prefs: { includeConvenience: boolean; defaultOpenNow: boolean },
+  prefs: { defaultRadius: number; defaultMaxResults: number; includeConvenience: boolean; defaultOpenNow: boolean },
 ): InlineKeyboard {
+  const currentRadiusIdx = RADIUS_OPTIONS.indexOf(prefs.defaultRadius);
+  const canIncrease = currentRadiusIdx < RADIUS_OPTIONS.length - 1;
+  const canDecrease = currentRadiusIdx > 0;
+
   const openNowLabel = prefs.defaultOpenNow
     ? "Open Now: ON"
     : "Open Now: OFF";
-  return new InlineKeyboard()
-    .text("Settings", "back:settings")
-    .text(openNowLabel, "opennow:toggle")
-    .row()
+
+  const keyboard = new InlineKeyboard();
+
+  if (canIncrease) {
+    keyboard.text("+ Radius", "results:radius_up");
+  }
+  if (canDecrease) {
+    keyboard.text("\u2212 Radius", "results:radius_down");
+  }
+  keyboard.text(openNowLabel, "opennow:toggle").row();
+
+  keyboard.text("Settings", "back:settings")
     .text("Back to Main", "back:main");
+
+  return keyboard;
+}
+
+export function noResultsKeyboard(
+  prefs: { defaultRadius: number; defaultMaxResults: number; includeConvenience: boolean; defaultOpenNow: boolean },
+): InlineKeyboard {
+  const currentRadiusIdx = RADIUS_OPTIONS.indexOf(prefs.defaultRadius);
+  const canIncrease = currentRadiusIdx < RADIUS_OPTIONS.length - 1;
+
+  const keyboard = new InlineKeyboard();
+
+  if (canIncrease) {
+    keyboard.text("Try Larger Radius", "results:radius_up");
+  }
+  if (!prefs.includeConvenience) {
+    keyboard.text("Include Convenience", "conv:toggle");
+  }
+  keyboard.row();
+  keyboard.text("Settings", "back:settings")
+    .text("Back to Main", "back:main");
+
+  return keyboard;
 }
 
 export function noResultsMessage(radius: number, includeConvenience: boolean): string {
   const distStr = radius >= 1000 ? `${radius / 1000}km` : `${radius}m`;
   let msg = `No supermarkets found within ${distStr}. Try:\n`;
-  msg += "- Increasing the search radius\n";
+  msg += "\u2022 Increasing the search radius\n";
   if (!includeConvenience) {
-    msg += "- Including convenience stores\n";
+    msg += "\u2022 Including convenience stores\n";
   }
-  msg += "- Verifying your location";
+  msg += "\u2022 Verifying your location";
   return msg;
+}
+
+export function resultsSummary(places: Place[], locationName?: string): string {
+  const count = places.length;
+  const loc = locationName ? ` near ${locationName.split(",")[0]}` : "";
+  return `Found ${count} supermarket${count !== 1 ? "s" : ""}${loc}.`;
 }
 
 export function formatInlineResults(
