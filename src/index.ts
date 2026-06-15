@@ -26,6 +26,9 @@ import {
   postResultsKeyboard,
   formatInlineResults,
 } from "./formatting";
+import {
+  geocode,
+} from "./nominatim";
 
 interface SessionData {
   prefs: UserPrefs;
@@ -188,22 +191,89 @@ bot.on("message:location", async (ctx) => {
 });
 
 bot.on("message:text", async (ctx) => {
-  await ctx.reply(
-    'To search by address, I need to look up that location.\nShare your GPS location with the button below for the fastest results:',
-    {
-      reply_markup: new Keyboard()
-        .requestLocation("Share Current Location")
-        .resized()
-        .oneTime(),
-    },
-  );
+  const query = ctx.message.text.trim();
+  if (!query) return;
+
+  await ctx.reply("Looking up address...");
+
+  try {
+    const coords = await geocode(query);
+    if (!coords) {
+      await ctx.reply(
+        'Sorry, I couldn\'t find that location. Try a more specific address or share your GPS location:',
+        {
+          reply_markup: new Keyboard()
+            .requestLocation("Share Current Location")
+            .resized()
+            .oneTime(),
+        },
+      );
+      return;
+    }
+
+    ctx.session.prefs.lastLocation = coords;
+
+    const prefs = ctx.session.prefs;
+    const req = buildSearchRequest(coords, prefs);
+    let places = await queryOverpass(req);
+
+    if (prefs.defaultOpenNow) {
+      places = filterOpenNow(places);
+    }
+
+    if (places.length === 0) {
+      await ctx.reply(
+        noResultsMessage(req.radius, req.includeConvenience),
+        {
+          reply_markup: postResultsKeyboard(prefs),
+        },
+      );
+      return;
+    }
+
+    for (const place of places) {
+      await ctx.reply(formatPlaceCard(place), {
+        parse_mode: "MarkdownV2",
+        reply_markup: placeKeyboard(place),
+      });
+    }
+
+    await ctx.reply(
+      `Found ${places.length} supermarket${places.length !== 1 ? "s" : ""} near "${query}".`,
+      {
+        reply_markup: postResultsKeyboard(prefs),
+      },
+    );
+  } catch (err) {
+    console.error("Address search error:", err);
+    await ctx.reply(
+      "Temporarily unable to fetch data. Please try again in a few minutes.",
+    );
+  }
 });
 
 bot.on("inline_query", async (ctx) => {
   const query = ctx.inlineQuery.query.trim();
   const prefs = ctx.session.prefs;
 
-  if (!prefs.lastLocation) {
+  let searchOrigin: { lat: number; lon: number } | null = null;
+
+  if (query) {
+    try {
+      const coords = await geocode(query);
+      if (coords) {
+        searchOrigin = coords;
+      }
+    } catch (err) {
+      console.error("Inline geocoding error:", err);
+    }
+  }
+
+  if (!searchOrigin) {
+    searchOrigin = prefs.lastLocation;
+  }
+
+  if (!searchOrigin) {
     await ctx.answerInlineQuery(
       [
         {
@@ -223,7 +293,7 @@ bot.on("inline_query", async (ctx) => {
   }
 
   try {
-    const req = buildSearchRequest(prefs.lastLocation, prefs);
+    const req = buildSearchRequest(searchOrigin, prefs);
     let places = await queryOverpass(req);
 
     if (prefs.defaultOpenNow) {
